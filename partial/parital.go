@@ -18,6 +18,7 @@ import (
 
 var indexes []*scip.Index
 var typeMaps []map[string]*scipType
+var whileListedSymbols map[string]struct{}
 
 // var globalSymbols symbolStringMap
 
@@ -87,6 +88,7 @@ func matchProtoService(s *protogen.Service, t *scipType, symbols map[string]*sci
 	}
 
 	for key, si := range siMap {
+		whileListedSymbols[si.Symbol] = struct{}{}
 		si.Relationships = append(si.Relationships, &scip.Relationship{
 			Symbol:           symbols[key].Symbol,
 			IsReference:      true,
@@ -351,6 +353,33 @@ func indexScipFile(id int, scipFilePath string, sourceroot string, wg *sync.Wait
 	indexes[id].Metadata.ProjectRoot = appendPrefix(sourceroot)
 }
 
+func filterDocument(d *scip.Document) *scip.Document {
+	ret := &scip.Document{}
+	for _, sym := range d.Symbols {
+		if _, ok := whileListedSymbols[sym.Symbol]; ok {
+			ret.Symbols = append(ret.Symbols, sym)
+		} else {
+			for _, rel := range sym.Relationships {
+				if _, ok := whileListedSymbols[rel.Symbol]; ok {
+					whileListedSymbols[sym.Symbol] = struct{}{}
+					ret.Symbols = append(ret.Symbols, sym)
+					break
+				}
+			}
+		}
+	}
+	for _, o := range d.Occurrences {
+		if _, ok := whileListedSymbols[o.Symbol]; ok {
+			ret.Occurrences = append(ret.Occurrences, o)
+		}
+	}
+
+	ret.Language = d.Language
+	ret.RelativePath = d.RelativePath
+	ret.Text = d.Text
+	return ret
+}
+
 func mergeIndexes(indexes []*scip.Index, newIndex *scip.Index) *scip.Index {
 	if len(indexes) == 0 {
 		glog.Infof("no index to be merged.")
@@ -359,7 +388,12 @@ func mergeIndexes(indexes []*scip.Index, newIndex *scip.Index) *scip.Index {
 
 	newIndex.Metadata = indexes[0].Metadata
 	for _, i := range indexes {
-		newIndex.Documents = append(newIndex.Documents, i.Documents...)
+		for _, d := range i.Documents {
+			newDoc := filterDocument(d)
+			if len(newDoc.Symbols) != 0 || len(newDoc.Occurrences) != 0 {
+				newIndex.Documents = append(newIndex.Documents, newDoc)
+			}
+		}
 		newIndex.ExternalSymbols = append(newIndex.ExternalSymbols, i.ExternalSymbols...)
 	}
 
@@ -368,6 +402,7 @@ func mergeIndexes(indexes []*scip.Index, newIndex *scip.Index) *scip.Index {
 
 func GenerateFile(gen *protogen.Plugin, files []*protogen.File, scipFilePaths []string, outputPath string, sourceroot string) {
 	indexes = make([]*scip.Index, len(scipFilePaths))
+	whileListedSymbols = map[string]struct{}{}
 	newIndex := &scip.Index{}
 	for i := range indexes {
 		indexes[i] = &scip.Index{}
@@ -386,10 +421,11 @@ func GenerateFile(gen *protogen.Plugin, files []*protogen.File, scipFilePaths []
 	}
 
 	wg.Wait()
-
+	docs := []*scip.Document{}
 	for _, f := range files {
 		protoDoc := generateProtoDocument(f, sourceroot)
-		newIndex.Documents = append([]*scip.Document{scip.CanonicalizeDocument(protoDoc)}, newIndex.Documents...)
+		docs = append(docs, protoDoc)
+		// newIndex.Documents = append([]*scip.Document{scip.CanonicalizeDocument(protoDoc)}, newIndex.Documents...)
 	}
 
 	newIndex = mergeIndexes(indexes, newIndex)
