@@ -10,7 +10,6 @@ import (
 	"google.golang.org/protobuf/compiler/protogen"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
-	"google.golang.org/protobuf/types/descriptorpb"
 )
 
 type symbolStringMap map[string]string
@@ -37,7 +36,7 @@ func newScipType(name string, typeSymbol *scip.SymbolInformation, methods []stri
 
 func (t *scipType) findMethod(s string) *scip.SymbolInformation {
 	for idx, m := range t.Methods {
-		if strings.EqualFold(m, s) {
+		if matchMethodName(m, s) {
 			return t.MethodSymbols[idx]
 		}
 	}
@@ -72,8 +71,12 @@ func getKeyName(s string) string {
 	return strings.ToLower(s)
 }
 
+func matchMethodName(s string, frag string) bool {
+	return strings.Contains(strings.ReplaceAll(getKeyName(s), "_", ""), strings.ReplaceAll(getKeyName(frag), "_", ""))
+}
+
 func matchName(s string, frag string) bool {
-	return strings.HasPrefix(getKeyName(s), getKeyName(frag))
+	return strings.Contains(getKeyName(s), getKeyName(frag))
 }
 
 func matchProtoService(s *protogen.Service, t *scipType, symbols symbolStringMap) bool {
@@ -96,14 +99,16 @@ func matchProtoService(s *protogen.Service, t *scipType, symbols symbolStringMap
 
 	t.TypeSymbol.Relationships = append(t.TypeSymbol.Relationships, &scip.Relationship{
 		Symbol:           symbols[getServiceKey(s)],
-		IsTypeDefinition: true,
+		IsImplementation: true,
+		IsReference:      true,
 	})
 
 	for key, si := range siMap {
 		symbolString := symbols[key]
 		si.Relationships = append(si.Relationships, &scip.Relationship{
-			Symbol:       symbolString,
-			IsDefinition: true,
+			Symbol:           symbolString,
+			IsReference:      true,
+			IsImplementation: true,
 		})
 	}
 
@@ -121,7 +126,7 @@ func addScipTypeFromSymbolInformation(i *scip.SymbolInformation) {
 
 	for _, desc := range sym.Descriptors {
 		if desc.Suffix == scip.Descriptor_Type {
-			typeName = desc.Name
+			typeName = typeName + "::" + desc.Name
 		} else if desc.Suffix == scip.Descriptor_Method {
 			methodName = desc.Name
 		}
@@ -158,6 +163,101 @@ func visitExternalSymbol(e *scip.SymbolInformation) {
 	newIndex.ExternalSymbols = append(newIndex.ExternalSymbols, e)
 }
 
+func makeOccurence(pos protoreflect.SourceLocation, symbol string) *scip.Occurrence {
+	return &scip.Occurrence{
+		Range:  []int32{int32(pos.StartLine), int32(pos.StartColumn), int32(pos.EndLine), int32(pos.EndColumn)},
+		Symbol: symbol,
+	}
+}
+
+func generateMethod(f *protogen.File, m *protogen.Method, d *scip.Document) {
+	symbol := makeMethodSymbol(f, m)
+	registerMethodSymbolString(m, symbol)
+
+	symbolInfo := makeSymbolInformation(symbol, scip.SymbolInformation_UnspecifiedKind)
+	occurence := makeOccurence(f.Desc.SourceLocations().ByPath(m.Location.Path), symbol)
+
+	d.Symbols = append(d.Symbols, symbolInfo)
+	d.Occurrences = append(d.Occurrences, occurence)
+}
+
+func generateService(f *protogen.File, s *protogen.Service, d *scip.Document) {
+	symbol := makeServiceSymbol(f, s)
+	registerServiceSymbolString(s, symbol)
+
+	symbolInfo := makeSymbolInformation(symbol, scip.SymbolInformation_UnspecifiedKind)
+	occurence := makeOccurence(f.Desc.SourceLocations().ByPath(s.Location.Path), symbol)
+
+	d.Symbols = append(d.Symbols, symbolInfo)
+	d.Occurrences = append(d.Occurrences, occurence)
+
+	for _, m := range s.Methods {
+		generateMethod(f, m, d)
+	}
+}
+
+func generateProtoDocument(f *protogen.File) *scip.Document {
+	protoDoc := &scip.Document{}
+	protoDoc.RelativePath = *f.Proto.Name
+	for _, s := range f.Services {
+		generateService(f, s, protoDoc)
+		matchCount := 0
+		for _, t := range typeMap {
+			if siMap := matchProtoService(s, t, globalSymbols); siMap {
+				matchCount++
+				glog.Infof("service %s matches: %v", s.GoName, siMap)
+			}
+		}
+		if matchCount == 0 {
+			glog.Fatalf("proto service implementation not found for %s", s.GoName)
+		}
+	}
+
+	return protoDoc
+}
+
+func makeSymbolInformation(symbol string, symbolKind scip.SymbolInformation_Kind) *scip.SymbolInformation {
+	return &scip.SymbolInformation{
+		Symbol: symbol,
+		Kind:   symbolKind,
+	}
+}
+
+func makeMethodSymbol(f *protogen.File, method *protogen.Method) string {
+	descriptors := []*scip.Descriptor{}
+	for _, namespace := range strings.Split(f.GeneratedFilenamePrefix, "/") {
+		descriptors = append(descriptors, &scip.Descriptor{Name: namespace, Suffix: scip.Descriptor_Namespace})
+	}
+	descriptors = append(descriptors, &scip.Descriptor{Name: method.Parent.GoName, Suffix: scip.Descriptor_Type})
+	descriptors = append(descriptors, &scip.Descriptor{Name: method.GoName, Suffix: scip.Descriptor_Term})
+	return scip.VerboseSymbolFormatter.FormatSymbol(&scip.Symbol{
+		Scheme: "scip-proto",
+		Package: &scip.Package{
+			Manager: "proto",
+			Name:    *f.Proto.Package,
+			Version: *f.Proto.Syntax,
+		},
+		Descriptors: descriptors,
+	})
+}
+
+func makeServiceSymbol(f *protogen.File, service *protogen.Service) string {
+	descriptors := []*scip.Descriptor{}
+	for _, namespace := range strings.Split(f.GeneratedFilenamePrefix, "/") {
+		descriptors = append(descriptors, &scip.Descriptor{Name: namespace, Suffix: scip.Descriptor_Namespace})
+	}
+	descriptors = append(descriptors, &scip.Descriptor{Name: service.GoName, Suffix: scip.Descriptor_Type})
+	return scip.VerboseSymbolFormatter.FormatSymbol(&scip.Symbol{
+		Scheme: "scip-proto",
+		Package: &scip.Package{
+			Manager: "proto",
+			Name:    *f.Proto.Package,
+			Version: *f.Proto.Syntax,
+		},
+		Descriptors: descriptors,
+	})
+}
+
 func GenerateFile(gen *protogen.Plugin, f *protogen.File, scipFilePath string, outputPath string) {
 	newIndex = &scip.Index{}
 	typeMap = map[string]*scipType{}
@@ -180,22 +280,9 @@ func GenerateFile(gen *protogen.Plugin, f *protogen.File, scipFilePath string, o
 		glog.Fatalf("error in visiting the scip file: %v", err)
 	}
 
-	protoDoc := &scip.Document{}
-	for _, s := range f.Services {
-		generateService(f, s, protoDoc)
-		matchCount := 0
-		for _, t := range typeMap {
-			if siMap := matchProtoService(s, t, globalSymbols); siMap {
-				matchCount++
-				glog.Infof("service %s matches: %v", s.GoName, siMap)
-			}
-		}
-		if matchCount == 0 {
-			glog.Fatalf("proto service implementation not found for %s", s.GoName)
-		}
-	}
-
-	newIndex.Documents = append(newIndex.Documents, scip.CanonicalizeDocument(protoDoc))
+	protoDoc := generateProtoDocument(f)
+	newIndex.Documents = append([]*scip.Document{scip.CanonicalizeDocument(protoDoc)}, newIndex.Documents...)
+	// newIndex.Documents = []*scip.Document{scip.CanonicalizeDocument(protoDoc)}
 
 	bytes, err := proto.Marshal(newIndex)
 	if err != nil {
@@ -204,85 +291,4 @@ func GenerateFile(gen *protogen.Plugin, f *protogen.File, scipFilePath string, o
 
 	g := gen.NewGeneratedFile(outputPath, f.GoImportPath)
 	g.Write(bytes)
-}
-
-func makeOccurence(pos protoreflect.SourceLocation, symbol string) *scip.Occurrence {
-	return &scip.Occurrence{
-		Range:  []int32{int32(pos.StartLine), int32(pos.StartColumn), int32(pos.EndLine), int32(pos.EndColumn)},
-		Symbol: symbol,
-	}
-}
-
-func generateMethod(f *protogen.File, m *protogen.Method, d *scip.Document) {
-	symbol := makeMethodSymbol(f.Proto, m)
-	registerMethodSymbolString(m, symbol)
-
-	symbolInfo := makeSymbolInformation(symbol, scip.SymbolInformation_Class)
-	occurence := makeOccurence(f.Desc.SourceLocations().ByPath(m.Location.Path), symbol)
-
-	d.Symbols = append(d.Symbols, symbolInfo)
-	d.Occurrences = append(d.Occurrences, occurence)
-}
-
-func generateService(f *protogen.File, s *protogen.Service, d *scip.Document) {
-	symbol := makeServiceSymbol(f.Proto, s)
-	registerServiceSymbolString(s, symbol)
-
-	symbolInfo := makeSymbolInformation(symbol, scip.SymbolInformation_Class)
-	occurence := makeOccurence(f.Desc.SourceLocations().ByPath(s.Location.Path), symbol)
-
-	d.Symbols = append(d.Symbols, symbolInfo)
-	d.Occurrences = append(d.Occurrences, occurence)
-
-	for _, m := range s.Methods {
-		generateMethod(f, m, d)
-	}
-}
-
-func generateProtoDocument(f *protogen.File) *scip.Document {
-	d := &scip.Document{}
-	d.Language = scip.Language_UnspecifiedLanguage.String()
-	// TODO: fixme
-	d.RelativePath = f.Desc.Path()
-	for _, s := range f.Services {
-		generateService(f, s, d)
-	}
-
-	return d
-}
-
-func makeSymbolInformation(symbol string, symbolKind scip.SymbolInformation_Kind) *scip.SymbolInformation {
-	return &scip.SymbolInformation{
-		Symbol: symbol,
-		Kind:   symbolKind,
-	}
-}
-
-func makeMethodSymbol(proto *descriptorpb.FileDescriptorProto, method *protogen.Method) string {
-	descriptors := []*scip.Descriptor{}
-	descriptors = append(descriptors, &scip.Descriptor{Name: method.Parent.GoName, Suffix: scip.Descriptor_Type})
-	descriptors = append(descriptors, &scip.Descriptor{Name: method.GoName, Suffix: scip.Descriptor_Method})
-	return scip.VerboseSymbolFormatter.FormatSymbol(&scip.Symbol{
-		Scheme: "scip-proto",
-		Package: &scip.Package{
-			Manager: "proto",
-			Name:    *proto.Package,
-			Version: *proto.Syntax,
-		},
-		Descriptors: descriptors,
-	})
-}
-
-func makeServiceSymbol(proto *descriptorpb.FileDescriptorProto, service *protogen.Service) string {
-	descriptors := []*scip.Descriptor{}
-	descriptors = append(descriptors, &scip.Descriptor{Name: service.GoName, Suffix: scip.Descriptor_Type})
-	return scip.VerboseSymbolFormatter.FormatSymbol(&scip.Symbol{
-		Scheme: "scip-proto",
-		Package: &scip.Package{
-			Manager: "proto",
-			Name:    *proto.Package,
-			Version: *proto.Syntax,
-		},
-		Descriptors: descriptors,
-	})
 }
