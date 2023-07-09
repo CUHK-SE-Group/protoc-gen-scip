@@ -3,8 +3,10 @@ package partial
 import (
 	"io"
 	"os"
+	"path/filepath"
 	"protoc-gen-scip/scip"
 	"strings"
+	"sync"
 
 	"github.com/golang/glog"
 	"google.golang.org/protobuf/compiler/protogen"
@@ -12,11 +14,12 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
-type symbolStringMap map[string]string
+// type symbolStringMap map[string]string
 
-var newIndex *scip.Index
-var typeMap map[string]*scipType
-var globalSymbols symbolStringMap
+var indexes []*scip.Index
+var typeMaps []map[string]*scipType
+
+// var globalSymbols symbolStringMap
 
 type scipType struct {
 	Name          string
@@ -51,22 +54,6 @@ func getMethodKey(m *protogen.Method) string {
 	return m.Parent.GoName + m.GoName
 }
 
-func registerServiceSymbolString(s *protogen.Service, symbol string) {
-	globalSymbols[getServiceKey(s)] = symbol
-}
-
-func getSymbolStringForService(s *protogen.Service) string {
-	return globalSymbols[getServiceKey(s)]
-}
-
-func registerMethodSymbolString(m *protogen.Method, symbol string) {
-	globalSymbols[getMethodKey(m)] = symbol
-}
-
-func getMethodStringForService(m *protogen.Method) string {
-	return globalSymbols[getMethodKey(m)]
-}
-
 func getKeyName(s string) string {
 	return strings.ToLower(s)
 }
@@ -79,43 +66,45 @@ func matchName(s string, frag string) bool {
 	return strings.Contains(getKeyName(s), getKeyName(frag))
 }
 
-func matchProtoService(s *protogen.Service, t *scipType, symbols symbolStringMap) bool {
+func matchProtoService(s *protogen.Service, t *scipType, symbols map[string]*scip.SymbolInformation, relations map[string][]*scip.Relationship) (map[string][]*scip.Relationship, bool) {
 	if t.TypeSymbol == nil {
 		glog.Fatalf("ill formed scip type: %v", *t)
 	}
 
 	if !matchName(t.Name, s.GoName) {
-		return false
+		return relations, false
 	}
 
 	siMap := map[string]*scip.SymbolInformation{}
+	siMap[getServiceKey(s)] = t.TypeSymbol
 	for _, m := range s.Methods {
 		if si := t.findMethod(m.GoName); si != nil {
 			siMap[getMethodKey(m)] = si
 		} else {
-			return false
+			return relations, false
 		}
 	}
 
-	t.TypeSymbol.Relationships = append(t.TypeSymbol.Relationships, &scip.Relationship{
-		Symbol:           symbols[getServiceKey(s)],
-		IsImplementation: true,
-		IsReference:      true,
-	})
-
 	for key, si := range siMap {
-		symbolString := symbols[key]
 		si.Relationships = append(si.Relationships, &scip.Relationship{
-			Symbol:           symbolString,
+			Symbol:           symbols[key].Symbol,
 			IsReference:      true,
 			IsImplementation: true,
 		})
+		if _, ok := relations[key]; !ok {
+			relations[key] = []*scip.Relationship{}
+		}
+		relations[key] = append(relations[key], &scip.Relationship{
+			Symbol:      si.Symbol,
+			IsReference: true,
+		})
 	}
+	glog.Infof("service %s matches: %s", s.GoName, t.TypeSymbol.Symbol)
 
-	return true
+	return relations, true
 }
 
-func addScipTypeFromSymbolInformation(i *scip.SymbolInformation) {
+func addScipTypeFromSymbolInformation(mapId int, i *scip.SymbolInformation) {
 	typeName := ""
 	methodName := ""
 	sym, err := scip.ParseSymbol(i.Symbol)
@@ -127,40 +116,29 @@ func addScipTypeFromSymbolInformation(i *scip.SymbolInformation) {
 	for _, desc := range sym.Descriptors {
 		if desc.Suffix == scip.Descriptor_Type {
 			typeName = typeName + "::" + desc.Name
-		} else if desc.Suffix == scip.Descriptor_Method {
+		} else if desc.Suffix == scip.Descriptor_Method || desc.Suffix == scip.Descriptor_Term {
 			methodName = desc.Name
 		}
 	}
 
 	if typeName != "" && methodName != "" {
-		if t, ok := typeMap[typeName]; ok {
+		if t, ok := typeMaps[mapId][typeName]; ok {
 			t.Methods = append(t.Methods, methodName)
 			t.MethodSymbols = append(t.MethodSymbols, i)
 		} else {
-			typeMap[typeName] = newScipType(typeName, nil, []string{methodName}, []*scip.SymbolInformation{i})
+			typeMaps[mapId][typeName] = newScipType(typeName, nil, []string{methodName}, []*scip.SymbolInformation{i})
 		}
 	} else if typeName != "" && methodName == "" {
-		if t, ok := typeMap[typeName]; ok {
+		if t, ok := typeMaps[mapId][typeName]; ok {
 			t.TypeSymbol = i
 		} else {
-			typeMap[typeName] = newScipType(typeName, i, []string{}, []*scip.SymbolInformation{})
+			typeMaps[mapId][typeName] = newScipType(typeName, i, []string{}, []*scip.SymbolInformation{})
 		}
 	}
 }
 
-func visitMetadata(m *scip.Metadata) {
-	newIndex.Metadata = m
-}
-
-func visitDocument(d *scip.Document) {
-	newIndex.Documents = append(newIndex.Documents, d)
-	for _, i := range d.Symbols {
-		addScipTypeFromSymbolInformation(i)
-	}
-}
-
-func visitExternalSymbol(e *scip.SymbolInformation) {
-	newIndex.ExternalSymbols = append(newIndex.ExternalSymbols, e)
+func filter(d *scip.Document) bool {
+	return true
 }
 
 func makeOccurence(pos protoreflect.SourceLocation, symbol string) *scip.Occurrence {
@@ -170,47 +148,96 @@ func makeOccurence(pos protoreflect.SourceLocation, symbol string) *scip.Occurre
 	}
 }
 
-func generateMethod(f *protogen.File, m *protogen.Method, d *scip.Document) {
+func generateMethod(f *protogen.File, m *protogen.Method, d *scip.Document) *scip.SymbolInformation {
 	symbol := makeMethodSymbol(f, m)
-	registerMethodSymbolString(m, symbol)
 
 	symbolInfo := makeSymbolInformation(symbol, scip.SymbolInformation_UnspecifiedKind)
 	occurence := makeOccurence(f.Desc.SourceLocations().ByPath(m.Location.Path), symbol)
 
 	d.Symbols = append(d.Symbols, symbolInfo)
 	d.Occurrences = append(d.Occurrences, occurence)
+
+	return symbolInfo
 }
 
-func generateService(f *protogen.File, s *protogen.Service, d *scip.Document) {
+func generateService(f *protogen.File, s *protogen.Service, d *scip.Document) map[string]*scip.SymbolInformation {
+	siMap := map[string]*scip.SymbolInformation{}
 	symbol := makeServiceSymbol(f, s)
-	registerServiceSymbolString(s, symbol)
 
 	symbolInfo := makeSymbolInformation(symbol, scip.SymbolInformation_UnspecifiedKind)
 	occurence := makeOccurence(f.Desc.SourceLocations().ByPath(s.Location.Path), symbol)
 
 	d.Symbols = append(d.Symbols, symbolInfo)
 	d.Occurrences = append(d.Occurrences, occurence)
+	siMap[getServiceKey(s)] = symbolInfo
 
 	for _, m := range s.Methods {
-		generateMethod(f, m, d)
+		siMap[getMethodKey(m)] = generateMethod(f, m, d)
 	}
+
+	return siMap
 }
 
-func generateProtoDocument(f *protogen.File) *scip.Document {
+func generateProtoDocument(f *protogen.File, sourceroot string) *scip.Document {
 	protoDoc := &scip.Document{}
-	protoDoc.RelativePath = *f.Proto.Name
+	absFilePath, err := filepath.Abs(*f.Proto.Name)
+	if err != nil {
+		glog.Errorf("can not get the absolute path of the input proto: %v", err)
+		glog.Errorf("the filename is: %s", *f.Proto.Name)
+		sourceroot = ""
+		absFilePath = *f.Proto.Name
+	}
+
+	if sourceroot != "" {
+		relPath, err := filepath.Rel(sourceroot, absFilePath)
+		if err != nil {
+			glog.Errorf("can not get the relative path for the new proto document: %v", err)
+			glog.Errorf("the sourceroot is %s, and the absolute file path is %s", sourceroot, absFilePath)
+			relPath = *f.Proto.Name
+		}
+		protoDoc.RelativePath = relPath
+	} else {
+		protoDoc.RelativePath = *f.Proto.Name
+	}
+
 	for _, s := range f.Services {
-		generateService(f, s, protoDoc)
-		matchCount := 0
-		for _, t := range typeMap {
-			if siMap := matchProtoService(s, t, globalSymbols); siMap {
-				matchCount++
-				glog.Infof("service %s matches: %v", s.GoName, siMap)
+		siMap := generateService(f, s, protoDoc)
+		numGoroutines := len(typeMaps)
+		relationMapChan := make(chan map[string][]*scip.Relationship, numGoroutines)
+		var wg sync.WaitGroup
+		wg.Add(numGoroutines)
+
+		for _, types := range typeMaps {
+			scipTypes := types
+			matched := false
+			go func() {
+				relations := make(map[string][]*scip.Relationship)
+				for _, t := range scipTypes {
+					relations, matched = matchProtoService(s, t, siMap, relations)
+				}
+				if !matched {
+					relationMapChan <- relations
+				}
+				wg.Done()
+			}()
+		}
+
+		wg.Wait()
+
+		close(relationMapChan)
+
+		if len(relationMapChan) == 0 {
+			glog.Errorf("proto service implementation not found for %s", s.GoName)
+			glog.Errorf("skip the service: %s", s.GoName)
+			continue
+		}
+
+		for m := range relationMapChan {
+			for key, rels := range m {
+				siMap[key].Relationships = append(siMap[key].Relationships, rels...)
 			}
 		}
-		if matchCount == 0 {
-			glog.Fatalf("proto service implementation not found for %s", s.GoName)
-		}
+
 	}
 
 	return protoDoc
@@ -258,37 +285,119 @@ func makeServiceSymbol(f *protogen.File, service *protogen.Service) string {
 	})
 }
 
-func GenerateFile(gen *protogen.Plugin, f *protogen.File, scipFilePath string, outputPath string) {
-	newIndex = &scip.Index{}
-	typeMap = map[string]*scipType{}
-	globalSymbols = symbolStringMap{}
+func removePrefix(path string) string {
+	return strings.TrimPrefix(path, "file://")
+}
+
+func appendPrefix(path string) string {
+	if !strings.HasPrefix(path, "file://") {
+		return "file://" + path
+	}
+	return path
+}
+
+func indexScipFile(id int, scipFilePath string, sourceroot string, wg *sync.WaitGroup) {
+	defer wg.Done()
+	visitDocument := func(d *scip.Document) {
+		absDocPath := filepath.Join(removePrefix(indexes[id].Metadata.GetProjectRoot()), d.RelativePath)
+		absDocPath = filepath.Clean(absDocPath)
+		newRelPath, err := filepath.Rel(sourceroot, absDocPath)
+		if err != nil {
+			glog.Errorf("can not get the new relative path for %s: %v", scipFilePath, err)
+			newRelPath = d.RelativePath
+		}
+		d.RelativePath = newRelPath
+		indexes[id].Documents = append(indexes[id].Documents, d)
+		if filter(d) {
+			for _, i := range d.Symbols {
+				addScipTypeFromSymbolInformation(id, i)
+			}
+		}
+	}
+
+	visitMetadata := func(m *scip.Metadata) {
+		indexes[id].Metadata = m
+	}
+
+	visitExternalSymbol := func(e *scip.SymbolInformation) {
+		indexes[id].ExternalSymbols = append(indexes[id].ExternalSymbols, e)
+	}
 
 	visitor := scip.IndexVisitor{
 		VisitMetadata:       visitMetadata,
 		VisitDocument:       visitDocument,
 		VisitExternalSymbol: visitExternalSymbol,
 	}
+
 	scipFile, err := os.Open(scipFilePath)
 	if err != nil {
-		glog.Fatalf("Error opening file: %s\n", err.Error())
+		glog.Errorf("Error opening file: %s\n", err.Error())
+		glog.Errorf("skip that file: %s", scipFilePath)
+		indexes[id] = &scip.Index{}
+		return
 	}
 	defer scipFile.Close()
 	is := io.Reader(scipFile)
 
 	err = visitor.ParseStreaming(is)
 	if err != nil {
-		glog.Fatalf("error in visiting the scip file: %v", err)
+		glog.Errorf("error in visiting the scip file: %v", err)
+		glog.Errorf("skip that file: %s", scipFilePath)
+		indexes[id] = &scip.Index{}
+		return
 	}
 
-	protoDoc := generateProtoDocument(f)
-	newIndex.Documents = append([]*scip.Document{scip.CanonicalizeDocument(protoDoc)}, newIndex.Documents...)
-	// newIndex.Documents = []*scip.Document{scip.CanonicalizeDocument(protoDoc)}
+	indexes[id].Metadata.ProjectRoot = appendPrefix(sourceroot)
+}
+
+func mergeIndexes(indexes []*scip.Index, newIndex *scip.Index) *scip.Index {
+	if len(indexes) == 0 {
+		glog.Infof("no index to be merged.")
+		return newIndex
+	}
+
+	newIndex.Metadata = indexes[0].Metadata
+	for _, i := range indexes {
+		newIndex.Documents = append(newIndex.Documents, i.Documents...)
+		newIndex.ExternalSymbols = append(newIndex.ExternalSymbols, i.ExternalSymbols...)
+	}
+
+	return newIndex
+}
+
+func GenerateFile(gen *protogen.Plugin, files []*protogen.File, scipFilePaths []string, outputPath string, sourceroot string) {
+	indexes = make([]*scip.Index, len(scipFilePaths))
+	newIndex := &scip.Index{}
+	for i := range indexes {
+		indexes[i] = &scip.Index{}
+	}
+	typeMaps = make([]map[string]*scipType, len(scipFilePaths))
+	for i := range typeMaps {
+		typeMaps[i] = map[string]*scipType{}
+	}
+	// globalSymbols = symbolStringMap{}
+
+	numGoroutines := len(scipFilePaths)
+	var wg sync.WaitGroup
+	wg.Add(numGoroutines)
+	for id, path := range scipFilePaths {
+		go indexScipFile(id, path, sourceroot, &wg)
+	}
+
+	wg.Wait()
+
+	for _, f := range files {
+		protoDoc := generateProtoDocument(f, sourceroot)
+		newIndex.Documents = append([]*scip.Document{scip.CanonicalizeDocument(protoDoc)}, newIndex.Documents...)
+	}
+
+	newIndex = mergeIndexes(indexes, newIndex)
 
 	bytes, err := proto.Marshal(newIndex)
 	if err != nil {
 		glog.Fatalf("failed to generate protobuf of the newly updated index: %v", err)
 	}
 
-	g := gen.NewGeneratedFile(outputPath, f.GoImportPath)
+	g := gen.NewGeneratedFile(outputPath, files[0].GoImportPath)
 	g.Write(bytes)
 }
