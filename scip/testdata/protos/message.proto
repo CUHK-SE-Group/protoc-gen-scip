@@ -1,0 +1,36 @@
+syntax = "proto3";
+package protos;
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/any.proto";
+import "google/protobuf/duration.proto";
+option go_package = "./proto";
+
+enum MyEnum {
+  ENUM_VALUE_1 = 0;
+  ENUM_VALUE_2 = 1;
+  ENUM_VALUE_3 = 2;
+}
+
+message InnerMessage {
+  int32 inner_value = 1;
+}
+
+message CommonMessage {
+  string my_string = 1;
+  int32 my_int32 = 2;
+  float my_float = 3;
+  bool my_bool = 4;
+  MyEnum my_enum = 5;
+  repeated int32 my_numbers = 6;
+  InnerMessage inner_message = 7;
+  oneof my_field {
+    string my_string_field = 8;
+    int32 my_int32_field = 9;
+  }
+  bytes my_bytes = 10;
+  map<string, int32> my_map = 11;
+  google.protobuf.Timestamp my_timestamp = 12;
+  google.protobuf.Any my_any = 13;
+  google.protobuf.Duration my_duration = 14;
+  repeated string call_stack = 15;
+}

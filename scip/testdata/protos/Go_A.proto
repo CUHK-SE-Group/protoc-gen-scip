@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package protos;
+option go_package = "./proto";
+import "protos/message.proto";
+
+service Go_A {
+  rpc Go_A_1(CommonMessage) returns (CommonMessage) {}
+  rpc Go_A_2(CommonMessage) returns (CommonMessage) {}
+  rpc Go_A_3(CommonMessage) returns (CommonMessage) {}
+}
