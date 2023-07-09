@@ -1,2 +1,4 @@
 go.sum
 protoc-gen-scip
+.idea
+convert/convert

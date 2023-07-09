@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package protos;
+option go_package = "./proto";
+option java_package = "src.main.benchmark";
+
+import "protos/message.proto";
+
+
+service Ts_A {
+  rpc Ts_A_1(CommonMessage) returns (CommonMessage) {}
+  rpc Ts_A_2(CommonMessage) returns (CommonMessage) {}
+  rpc Ts_A_3(CommonMessage) returns (CommonMessage) {}
+}
