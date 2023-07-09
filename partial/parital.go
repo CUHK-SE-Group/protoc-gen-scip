@@ -68,7 +68,8 @@ func matchName(s string, frag string) bool {
 
 func matchProtoService(s *protogen.Service, t *scipType, symbols map[string]*scip.SymbolInformation, relations map[string][]*scip.Relationship) (map[string][]*scip.Relationship, bool) {
 	if t.TypeSymbol == nil {
-		glog.Fatalf("ill formed scip type: %v", *t)
+		glog.Errorf("ill formed scip type: %v", *t)
+		return relations, false
 	}
 
 	if !matchName(t.Name, s.GoName) {
