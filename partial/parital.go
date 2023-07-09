@@ -421,14 +421,15 @@ func GenerateFile(gen *protogen.Plugin, files []*protogen.File, scipFilePaths []
 	}
 
 	wg.Wait()
-	docs := []*scip.Document{}
+	protoDocs := []*scip.Document{}
 	for _, f := range files {
 		protoDoc := generateProtoDocument(f, sourceroot)
-		docs = append(docs, protoDoc)
+		protoDocs = append(protoDocs, protoDoc)
 		// newIndex.Documents = append([]*scip.Document{scip.CanonicalizeDocument(protoDoc)}, newIndex.Documents...)
 	}
 
 	newIndex = mergeIndexes(indexes, newIndex)
+	newIndex.Documents = append(protoDocs, newIndex.Documents...)
 
 	bytes, err := proto.Marshal(newIndex)
 	if err != nil {
