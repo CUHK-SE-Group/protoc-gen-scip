@@ -10,7 +10,7 @@ import (
 
 	"github.com/sourcegraph/sourcegraph/lib/errors"
 
-	"github.com/sourcegraph/scip/bindings/go/scip"
+	"protoc-gen-scip/scip"
 )
 
 type convertFlags struct {
