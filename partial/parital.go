@@ -362,13 +362,19 @@ func indexScipFile(id int, scipFilePath string, sourceroot string, wg *sync.Wait
 }
 
 func appendProtoRef(s *scip.SymbolInformation) *scip.SymbolInformation {
-	if protoSym, ok := grpcImpls.Load(s.Symbol); ok {
-		s.Relationships = append(s.Relationships, &scip.Relationship{
-			Symbol:           protoSym.(string),
-			IsReference:      true,
-			IsImplementation: true,
-		})
+	newRelations := []*scip.Relationship{}
+	for _, rel := range s.Relationships {
+		if protoSym, ok := grpcImpls.Load(rel.Symbol); ok {
+			newRelations = append(newRelations, &scip.Relationship{
+				Symbol:           protoSym.(string),
+				IsReference:      true,
+				IsImplementation: true,
+			})
+		}
 	}
+
+	s.Relationships = append(s.Relationships, newRelations...)
+
 	return s
 }
 
