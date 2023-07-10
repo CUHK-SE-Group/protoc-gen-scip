@@ -20,6 +20,8 @@ var indexes []*scip.Index
 var typeMaps []map[string]*scipType
 var whiteListedSymbols sync.Map
 
+var grpcImpls sync.Map
+
 // var globalSymbols symbolStringMap
 
 type scipType struct {
@@ -89,6 +91,7 @@ func matchProtoService(s *protogen.Service, t *scipType, symbols map[string]*sci
 
 	for key, si := range siMap {
 		whiteListedSymbols.Store(si.Symbol, struct{}{})
+		grpcImpls.Store(si.Symbol, symbols[key].Symbol)
 		si.Relationships = append(si.Relationships, &scip.Relationship{
 			Symbol:           symbols[key].Symbol,
 			IsReference:      true,
@@ -358,15 +361,28 @@ func indexScipFile(id int, scipFilePath string, sourceroot string, wg *sync.Wait
 	indexes[id].Metadata.ProjectRoot = appendPrefix(sourceroot)
 }
 
+func appendProtoRef(s *scip.SymbolInformation) *scip.SymbolInformation {
+	if protoSym, ok := grpcImpls.Load(s.Symbol); ok {
+		s.Relationships = append(s.Relationships, &scip.Relationship{
+			Symbol:           protoSym.(string),
+			IsReference:      true,
+			IsImplementation: true,
+		})
+	}
+	return s
+}
+
 func filterDocument(d *scip.Document) *scip.Document {
 	ret := &scip.Document{}
 	for _, sym := range d.Symbols {
 		if _, ok := whiteListedSymbols.Load(sym.Symbol); ok {
+			sym = appendProtoRef(sym)
 			ret.Symbols = append(ret.Symbols, sym)
 		} else {
 			for _, rel := range sym.Relationships {
 				if _, ok := whiteListedSymbols.Load(rel.Symbol); ok {
 					whiteListedSymbols.Store(sym.Symbol, struct{}{})
+					sym = appendProtoRef(sym)
 					ret.Symbols = append(ret.Symbols, sym)
 					break
 				}
