@@ -350,6 +350,11 @@ func indexScipFile(id int, scipFilePath string, sourceroot string, wg *sync.Wait
 		return
 	}
 
+	if indexes[id].Metadata == nil {
+		glog.Errorf("Metada is nil in %s: maybe the index is empty? ", scipFilePath)
+		indexes[id].Metadata = &scip.Metadata{}
+	}
+
 	indexes[id].Metadata.ProjectRoot = appendPrefix(sourceroot)
 }
 
