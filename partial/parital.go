@@ -18,7 +18,9 @@ import (
 
 var indexes []*scip.Index
 var typeMaps []map[string]*scipType
-var whileListedSymbols sync.Map
+var whiteListedSymbols sync.Map
+
+var grpcImpls sync.Map
 
 // var globalSymbols symbolStringMap
 
@@ -88,7 +90,8 @@ func matchProtoService(s *protogen.Service, t *scipType, symbols map[string]*sci
 	}
 
 	for key, si := range siMap {
-		whileListedSymbols.Store(si.Symbol, struct{}{})
+		whiteListedSymbols.Store(si.Symbol, struct{}{})
+		grpcImpls.Store(si.Symbol, symbols[key].Symbol)
 		si.Relationships = append(si.Relationships, &scip.Relationship{
 			Symbol:           symbols[key].Symbol,
 			IsReference:      true,
@@ -350,18 +353,36 @@ func indexScipFile(id int, scipFilePath string, sourceroot string, wg *sync.Wait
 		return
 	}
 
+	if indexes[id].Metadata == nil {
+		glog.Errorf("Metada is nil in %s: maybe the index is empty? ", scipFilePath)
+		indexes[id].Metadata = &scip.Metadata{}
+	}
+
 	indexes[id].Metadata.ProjectRoot = appendPrefix(sourceroot)
+}
+
+func appendProtoRef(s *scip.SymbolInformation) *scip.SymbolInformation {
+	if protoSym, ok := grpcImpls.Load(s.Symbol); ok {
+		s.Relationships = append(s.Relationships, &scip.Relationship{
+			Symbol:           protoSym.(string),
+			IsReference:      true,
+			IsImplementation: true,
+		})
+	}
+	return s
 }
 
 func filterDocument(d *scip.Document) *scip.Document {
 	ret := &scip.Document{}
 	for _, sym := range d.Symbols {
-		if _, ok := whileListedSymbols.Load(sym.Symbol); ok {
+		if _, ok := whiteListedSymbols.Load(sym.Symbol); ok {
+			sym = appendProtoRef(sym)
 			ret.Symbols = append(ret.Symbols, sym)
 		} else {
 			for _, rel := range sym.Relationships {
-				if _, ok := whileListedSymbols.Load(rel.Symbol); ok {
-					whileListedSymbols.Store(sym.Symbol, struct{}{})
+				if _, ok := whiteListedSymbols.Load(rel.Symbol); ok {
+					whiteListedSymbols.Store(sym.Symbol, struct{}{})
+					sym = appendProtoRef(sym)
 					ret.Symbols = append(ret.Symbols, sym)
 					break
 				}
@@ -369,7 +390,7 @@ func filterDocument(d *scip.Document) *scip.Document {
 		}
 	}
 	for _, o := range d.Occurrences {
-		if _, ok := whileListedSymbols.Load(o.Symbol); ok {
+		if _, ok := whiteListedSymbols.Load(o.Symbol); ok {
 			ret.Occurrences = append(ret.Occurrences, o)
 		}
 	}
@@ -402,7 +423,7 @@ func mergeIndexes(indexes []*scip.Index, newIndex *scip.Index) *scip.Index {
 
 func GenerateFile(gen *protogen.Plugin, files []*protogen.File, scipFilePaths []string, outputPath string, sourceroot string) {
 	indexes = make([]*scip.Index, len(scipFilePaths))
-	whileListedSymbols = sync.Map{}
+	whiteListedSymbols = sync.Map{}
 	newIndex := &scip.Index{}
 	for i := range indexes {
 		indexes[i] = &scip.Index{}
