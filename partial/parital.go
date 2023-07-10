@@ -18,6 +18,9 @@ import (
 
 var indexes []*scip.Index
 var typeMaps []map[string]*scipType
+var whiteListedSymbols sync.Map
+
+var grpcImpls sync.Map
 
 // var globalSymbols symbolStringMap
 
@@ -68,7 +71,8 @@ func matchName(s string, frag string) bool {
 
 func matchProtoService(s *protogen.Service, t *scipType, symbols map[string]*scip.SymbolInformation, relations map[string][]*scip.Relationship) (map[string][]*scip.Relationship, bool) {
 	if t.TypeSymbol == nil {
-		glog.Fatalf("ill formed scip type: %v", *t)
+		glog.Errorf("ill formed scip type: %v", *t)
+		return relations, false
 	}
 
 	if !matchName(t.Name, s.GoName) {
@@ -86,6 +90,8 @@ func matchProtoService(s *protogen.Service, t *scipType, symbols map[string]*sci
 	}
 
 	for key, si := range siMap {
+		whiteListedSymbols.Store(si.Symbol, struct{}{})
+		grpcImpls.Store(si.Symbol, symbols[key].Symbol)
 		si.Relationships = append(si.Relationships, &scip.Relationship{
 			Symbol:           symbols[key].Symbol,
 			IsReference:      true,
@@ -347,7 +353,52 @@ func indexScipFile(id int, scipFilePath string, sourceroot string, wg *sync.Wait
 		return
 	}
 
+	if indexes[id].Metadata == nil {
+		glog.Errorf("Metada is nil in %s: maybe the index is empty? ", scipFilePath)
+		indexes[id].Metadata = &scip.Metadata{}
+	}
+
 	indexes[id].Metadata.ProjectRoot = appendPrefix(sourceroot)
+}
+
+func appendProtoRef(s *scip.SymbolInformation) *scip.SymbolInformation {
+	if protoSym, ok := grpcImpls.Load(s.Symbol); ok {
+		s.Relationships = append(s.Relationships, &scip.Relationship{
+			Symbol:           protoSym.(string),
+			IsReference:      true,
+			IsImplementation: true,
+		})
+	}
+	return s
+}
+
+func filterDocument(d *scip.Document) *scip.Document {
+	ret := &scip.Document{}
+	for _, sym := range d.Symbols {
+		if _, ok := whiteListedSymbols.Load(sym.Symbol); ok {
+			sym = appendProtoRef(sym)
+			ret.Symbols = append(ret.Symbols, sym)
+		} else {
+			for _, rel := range sym.Relationships {
+				if _, ok := whiteListedSymbols.Load(rel.Symbol); ok {
+					whiteListedSymbols.Store(sym.Symbol, struct{}{})
+					sym = appendProtoRef(sym)
+					ret.Symbols = append(ret.Symbols, sym)
+					break
+				}
+			}
+		}
+	}
+	for _, o := range d.Occurrences {
+		if _, ok := whiteListedSymbols.Load(o.Symbol); ok {
+			ret.Occurrences = append(ret.Occurrences, o)
+		}
+	}
+
+	ret.Language = d.Language
+	ret.RelativePath = d.RelativePath
+	ret.Text = d.Text
+	return ret
 }
 
 func mergeIndexes(indexes []*scip.Index, newIndex *scip.Index) *scip.Index {
@@ -358,7 +409,12 @@ func mergeIndexes(indexes []*scip.Index, newIndex *scip.Index) *scip.Index {
 
 	newIndex.Metadata = indexes[0].Metadata
 	for _, i := range indexes {
-		newIndex.Documents = append(newIndex.Documents, i.Documents...)
+		for _, d := range i.Documents {
+			newDoc := filterDocument(d)
+			if len(newDoc.Symbols) != 0 || len(newDoc.Occurrences) != 0 {
+				newIndex.Documents = append(newIndex.Documents, newDoc)
+			}
+		}
 		newIndex.ExternalSymbols = append(newIndex.ExternalSymbols, i.ExternalSymbols...)
 	}
 
@@ -367,6 +423,7 @@ func mergeIndexes(indexes []*scip.Index, newIndex *scip.Index) *scip.Index {
 
 func GenerateFile(gen *protogen.Plugin, files []*protogen.File, scipFilePaths []string, outputPath string, sourceroot string) {
 	indexes = make([]*scip.Index, len(scipFilePaths))
+	whiteListedSymbols = sync.Map{}
 	newIndex := &scip.Index{}
 	for i := range indexes {
 		indexes[i] = &scip.Index{}
@@ -385,13 +442,15 @@ func GenerateFile(gen *protogen.Plugin, files []*protogen.File, scipFilePaths []
 	}
 
 	wg.Wait()
-
+	protoDocs := []*scip.Document{}
 	for _, f := range files {
 		protoDoc := generateProtoDocument(f, sourceroot)
-		newIndex.Documents = append([]*scip.Document{scip.CanonicalizeDocument(protoDoc)}, newIndex.Documents...)
+		protoDocs = append(protoDocs, protoDoc)
+		// newIndex.Documents = append([]*scip.Document{scip.CanonicalizeDocument(protoDoc)}, newIndex.Documents...)
 	}
 
 	newIndex = mergeIndexes(indexes, newIndex)
+	newIndex.Documents = append(protoDocs, newIndex.Documents...)
 
 	bytes, err := proto.Marshal(newIndex)
 	if err != nil {

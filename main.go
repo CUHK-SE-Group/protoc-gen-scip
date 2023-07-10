@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io/fs"
 	"path/filepath"
 	"protoc-gen-scip/partial"
 
@@ -49,19 +48,11 @@ func main() {
 			inputFiles = append(inputFiles, f)
 		}
 
-		scipFiles := []string{}
-
-		err := filepath.WalkDir(*scipFilePath, func(path string, d fs.DirEntry, err error) error {
-			if !d.IsDir() && filepath.Ext(path) == ".scip" {
-				scipFiles = append(scipFiles, path)
-			}
-			return nil
-		})
+		scipFiles, err := filepath.Glob(filepath.Join(*scipFilePath, "*.scip"))
 
 		if err != nil {
 			glog.Fatalf("failed to scan the directory for scip index: %v", err)
 		}
-
 		if len(scipFiles) == 0 {
 			glog.Errorf("no index to be analyzed")
 			return nil
