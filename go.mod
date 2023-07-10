@@ -8,6 +8,7 @@ require (
 	github.com/google/go-cmp v0.5.9
 	github.com/google/gofuzz v1.2.0
 	github.com/hexops/gotextdiff v1.0.3
+	github.com/hhatto/gocloc v0.4.2
 	github.com/pseudomuto/protoc-gen-doc v1.5.1
 	github.com/sourcegraph/scip v0.3.1-0.20230627154934-45df7f6d33fc
 	github.com/sourcegraph/sourcegraph/lib v0.0.0-20230705101648-29b8d4ee986d
@@ -42,6 +43,8 @@ require (
 	github.com/felixge/fgprof v0.9.3 // indirect
 	github.com/getsentry/sentry-go v0.21.0 // indirect
 	github.com/go-chi/chi/v5 v5.0.8 // indirect
+	github.com/go-enry/go-enry/v2 v2.8.4 // indirect
+	github.com/go-enry/go-oniguruma v1.2.1 // indirect
 	github.com/go-logr/logr v1.2.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/gofrs/uuid/v5 v5.0.0 // indirect
