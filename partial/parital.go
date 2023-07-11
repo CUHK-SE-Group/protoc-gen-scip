@@ -71,7 +71,7 @@ func matchName(s string, frag string) bool {
 
 func matchProtoService(s *protogen.Service, t *scipType, symbols map[string]*scip.SymbolInformation, relations map[string][]*scip.Relationship) (map[string][]*scip.Relationship, bool) {
 	if t.TypeSymbol == nil {
-		glog.Errorf("ill formed scip type: %v", *t)
+		glog.Infof("ill formed scip type: %v", *t)
 		return relations, false
 	}
 
@@ -238,11 +238,11 @@ func generateProtoDocument(f *protogen.File, sourceroot string) *scip.Document {
 			continue
 		}
 
-		for m := range relationMapChan {
-			for key, rels := range m {
-				siMap[key].Relationships = append(siMap[key].Relationships, rels...)
-			}
-		}
+		// for m := range relationMapChan {
+		// 	// for key, rels := range m {
+		// 	// 	// siMap[key].Relationships = append(siMap[key].Relationships, rels...)
+		// 	// }
+		// }
 
 	}
 
@@ -292,7 +292,11 @@ func makeServiceSymbol(f *protogen.File, service *protogen.Service) string {
 }
 
 func removePrefix(path string) string {
-	return strings.TrimPrefix(path, "file://")
+	newPath := strings.TrimPrefix(path, "file://")
+	if !strings.HasPrefix(newPath, "/") {
+		return "/" + newPath
+	}
+	return newPath
 }
 
 func appendPrefix(path string) string {
@@ -326,7 +330,7 @@ func indexScipFile(id int, scipFilePath string, sourceroot string, wg *sync.Wait
 	}
 
 	visitExternalSymbol := func(e *scip.SymbolInformation) {
-		indexes[id].ExternalSymbols = append(indexes[id].ExternalSymbols, e)
+		// indexes[id].ExternalSymbols = append(indexes[id].ExternalSymbols, e)
 	}
 
 	visitor := scip.IndexVisitor{
@@ -361,15 +365,26 @@ func indexScipFile(id int, scipFilePath string, sourceroot string, wg *sync.Wait
 	indexes[id].Metadata.ProjectRoot = appendPrefix(sourceroot)
 }
 
+func findRelationSymbol(rels []*scip.Relationship, symbol string) bool {
+	for _, rel := range rels {
+		if rel.Symbol == symbol {
+			return true
+		}
+	}
+	return false
+}
+
 func appendProtoRef(s *scip.SymbolInformation) *scip.SymbolInformation {
 	newRelations := []*scip.Relationship{}
 	for _, rel := range s.Relationships {
 		if protoSym, ok := grpcImpls.Load(rel.Symbol); ok {
-			newRelations = append(newRelations, &scip.Relationship{
-				Symbol:           protoSym.(string),
-				IsReference:      true,
-				IsImplementation: true,
-			})
+			if !findRelationSymbol(s.Relationships, protoSym.(string)) {
+				newRelations = append(newRelations, &scip.Relationship{
+					Symbol:           protoSym.(string),
+					IsReference:      true,
+					IsImplementation: true,
+				})
+			}
 		}
 	}
 
@@ -421,7 +436,7 @@ func mergeIndexes(indexes []*scip.Index, newIndex *scip.Index) *scip.Index {
 				newIndex.Documents = append(newIndex.Documents, newDoc)
 			}
 		}
-		newIndex.ExternalSymbols = append(newIndex.ExternalSymbols, i.ExternalSymbols...)
+		// newIndex.ExternalSymbols = append(newIndex.ExternalSymbols, i.ExternalSymbols...)
 	}
 
 	return newIndex

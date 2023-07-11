@@ -18,8 +18,8 @@ var outputFile *string
 var sourceroot *string
 
 func init() {
-	flag.Set("logtostderr", "true")
-	flag.Set("stderrthreshold", "INFO")
+	flag.Set("logtostderr", "false")
+	flag.Set("stderrthreshold", "ERROR")
 }
 
 func main() {
