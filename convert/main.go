@@ -17,8 +17,9 @@ import (
 )
 
 type convertFlags struct {
-	from string
-	to   string
+	from    string
+	to      string
+	verbose bool
 }
 
 func readFromOption(fromPath string) (*scip.Index, error) {
@@ -75,6 +76,12 @@ func clocCommand() cli.Command {
 		Usage: "Count a SCIP index's Lines of Code",
 		Flags: []cli.Flag{
 			fromFlag(&convertFlags.from),
+			&cli.BoolFlag{
+				Name:        "verbose",
+				Usage:       "output cloc files",
+				Destination: &convertFlags.verbose,
+				Value:       false,
+			},
 		},
 		Action: func(c *cli.Context) error {
 			return clocMain(convertFlags)
@@ -101,7 +108,11 @@ func clocMain(flags convertFlags) error {
 	for _, v := range files {
 		paths = append(paths, path.Join(root, v))
 	}
-
+	if flags.verbose {
+		for _, v := range paths {
+			fmt.Println(v)
+		}
+	}
 	processor := gocloc.NewProcessor(languages, options)
 	result, err := processor.Analyze(paths)
 	if err != nil {
