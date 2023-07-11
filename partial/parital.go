@@ -478,6 +478,6 @@ func GenerateFile(gen *protogen.Plugin, files []*protogen.File, scipFilePaths []
 		glog.Fatalf("failed to generate protobuf of the newly updated index: %v", err)
 	}
 
-	g := gen.NewGeneratedFile(outputPath, files[0].GoImportPath)
+	g := gen.NewGeneratedFile(outputPath, "")
 	g.Write(bytes)
 }
