@@ -1,21 +1,25 @@
 package main
 
 import (
+	"fmt"
+	"github.com/hhatto/gocloc"
 	"github.com/urfave/cli/v2"
 	"google.golang.org/protobuf/proto"
 	"io"
 	"log"
 	"os"
+	"path"
 	"strings"
 
 	"github.com/sourcegraph/sourcegraph/lib/errors"
 
-	"github.com/sourcegraph/scip/bindings/go/scip"
+	"protoc-gen-scip/scip"
 )
 
 type convertFlags struct {
-	from string
-	to   string
+	from    string
+	to      string
+	verbose bool
 }
 
 func readFromOption(fromPath string) (*scip.Index, error) {
@@ -65,7 +69,62 @@ func convertCommand() cli.Command {
 	}
 	return convert
 }
+func clocCommand() cli.Command {
+	var convertFlags convertFlags
+	convert := cli.Command{
+		Name:  "cloc",
+		Usage: "Count a SCIP index's Lines of Code",
+		Flags: []cli.Flag{
+			fromFlag(&convertFlags.from),
+			&cli.BoolFlag{
+				Name:        "verbose",
+				Usage:       "output cloc files",
+				Destination: &convertFlags.verbose,
+				Value:       false,
+			},
+		},
+		Action: func(c *cli.Context) error {
+			return clocMain(convertFlags)
+		},
+	}
+	return convert
+}
 
+func clocMain(flags convertFlags) error {
+	scipIndex, err := readFromOption(flags.from)
+	if err != nil {
+		return err
+	}
+	root := scipIndex.Metadata.ProjectRoot
+	var files []string
+	for _, doc := range scipIndex.Documents {
+		files = append(files, doc.RelativePath)
+	}
+	languages := gocloc.NewDefinedLanguages()
+	options := gocloc.NewClocOptions()
+	var paths []string
+	root = strings.TrimPrefix(root, "file://")
+
+	for _, v := range files {
+		paths = append(paths, path.Join(root, v))
+	}
+	if flags.verbose {
+		for _, v := range paths {
+			fmt.Println(v)
+		}
+	}
+	processor := gocloc.NewProcessor(languages, options)
+	result, err := processor.Analyze(paths)
+	if err != nil {
+		fmt.Printf("gocloc fail. error: %v\n", err)
+		return err
+	}
+
+	for k, v := range result.Languages {
+		fmt.Printf("Language: %v, Loc: %v\n", k, v.Code)
+	}
+	return nil
+}
 func convertMain(flags convertFlags) error {
 	scipIndex, err := readFromOption(flags.from)
 	if err != nil {
@@ -121,7 +180,8 @@ func fromFlag(storage *string) *cli.StringFlag {
 
 func commands() []*cli.Command {
 	convert := convertCommand()
-	return []*cli.Command{&convert}
+	cloccmd := clocCommand()
+	return []*cli.Command{&convert, &cloccmd}
 }
 func main() {
 	app := scipApp()
