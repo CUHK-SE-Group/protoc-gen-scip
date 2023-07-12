@@ -392,49 +392,17 @@ func indexScipFile(id int, scipFilePath string, sourceroot string, wg *sync.Wait
 	indexes[id].Metadata.ProjectRoot = appendPrefix(sourceroot)
 }
 
-func filterDocument(d *scip.Document) *scip.Document {
+func filterDocument(d *scip.Document, dependencies map[string]struct{}) *scip.Document {
 	ret := &scip.Document{}
-	dependencies := map[string]struct{}{}
-	whiteListedSymbols.Range(func(key interface{}, value interface{}) bool {
-		dependencies[key.(string)] = value.(struct{})
-		return true
-	})
 
-	leftSymbols := d.Symbols
-	newLeftSymbols := []*scip.SymbolInformation{}
-	selectedSymbols := map[string]struct{}{}
-
-	for _, sym := range d.Symbols {
-
-		if _, ok := dependencies[sym.Symbol]; ok {
-			ret.Symbols = append(ret.Symbols, sym)
-			selectedSymbols[sym.Symbol] = struct{}{}
-		} else {
-			newLeftSymbols = append(newLeftSymbols, sym)
+	for _, s := range d.Symbols {
+		if _, ok := dependencies[s.Symbol]; ok {
+			ret.Symbols = append(ret.Symbols, s)
 		}
-		leftSymbols = newLeftSymbols
-	}
-
-	for len(dependencies) > 0 {
-		new_dependencies := map[string]struct{}{}
-		newLeftSymbols = []*scip.SymbolInformation{}
-		for _, sym := range leftSymbols {
-			for _, rel := range sym.Relationships {
-				if _, ok := dependencies[rel.Symbol]; ok {
-					ret.Symbols = append(ret.Symbols, sym)
-					selectedSymbols[sym.Symbol] = struct{}{}
-					new_dependencies[sym.Symbol] = struct{}{}
-					break
-				}
-			}
-			newLeftSymbols = append(newLeftSymbols, sym)
-		}
-		leftSymbols = newLeftSymbols
-		dependencies = new_dependencies
 	}
 
 	for _, o := range d.Occurrences {
-		if _, ok := selectedSymbols[o.Symbol]; ok {
+		if _, ok := dependencies[o.Symbol]; ok {
 			ret.Occurrences = append(ret.Occurrences, o)
 		}
 	}
@@ -445,16 +413,53 @@ func filterDocument(d *scip.Document) *scip.Document {
 	return ret
 }
 
+func hasOneOfRelationships(s *scip.SymbolInformation, rels map[string]struct{}) bool {
+	for _, rel := range s.Relationships {
+		if _, ok := rels[rel.Symbol]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 func mergeIndexes(indexes []*scip.Index, newIndex *scip.Index) *scip.Index {
 	if len(indexes) == 0 {
 		glog.Errorf("no index to be merged.")
 		return newIndex
 	}
 
+	documents := make([][]*scip.SymbolInformation, len(indexes))
+	for id, i := range indexes {
+		for _, d := range i.Documents {
+			documents[id] = append(documents[id], d.Symbols...)
+		}
+	}
+	prevSize := 0
+	dependencies := map[string]struct{}{}
+	whiteListedSymbols.Range(func(key interface{}, value interface{}) bool {
+		dependencies[key.(string)] = value.(struct{})
+		return true
+	})
+
+	for len(dependencies) != prevSize {
+		prevSize = len(dependencies)
+		for id, d := range documents {
+			leftSymbols := []*scip.SymbolInformation{}
+			for _, s := range d {
+				if hasOneOfRelationships(s, dependencies) {
+					dependencies[s.Symbol] = struct{}{}
+				} else {
+					leftSymbols = append(leftSymbols, s)
+				}
+			}
+			documents[id] = leftSymbols
+		}
+	}
+
 	newIndex.Metadata = indexes[0].Metadata
 	for _, i := range indexes {
 		for _, d := range i.Documents {
-			newDoc := filterDocument(d)
+			newDoc := filterDocument(d, dependencies)
 			if len(newDoc.Symbols) != 0 || len(newDoc.Occurrences) != 0 {
 				newIndex.Documents = append(newIndex.Documents, newDoc)
 			}
