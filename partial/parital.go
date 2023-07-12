@@ -50,6 +50,13 @@ func (t *scipType) findMethods(s string) []*scip.SymbolInformation {
 	return res
 }
 
+func (t *scipType) getTypeName() string {
+	if split := strings.SplitAfter(t.Name, "/"); len(split) > 1 {
+		return split[len(split)-1]
+	}
+	return t.Name
+}
+
 func getServiceKey(s *protogen.Service) string {
 	return s.GoName
 }
@@ -76,14 +83,14 @@ func matchProtoService(s *protogen.Service, t *scipType, symbols map[string]*sci
 		return relations, false
 	}
 
-	if !matchName(t.Name, s.GoName) {
+	if !matchName(t.getTypeName(), s.GoName) {
 		return relations, false
 	}
 
 	siMap := map[*scip.SymbolInformation]string{}
 	siMap[t.TypeSymbol] = getServiceKey(s)
 	for _, m := range s.Methods {
-		if matches := t.findMethods(m.GoName); matches != nil {
+		if matches := t.findMethods(m.GoName); len(matches) > 0 {
 			for _, si := range matches {
 				siMap[si] = getMethodKey(m)
 			}
@@ -116,9 +123,14 @@ func addScipTypeFromSymbolInformation(mapId int, i *scip.SymbolInformation) {
 	typeName := ""
 	methodName := ""
 	disambiguator := ""
+	scopes := ""
 
 	getMethodName := func(method string, disambiguator string) string {
 		return method + disambiguator
+	}
+
+	getKeyName := func(scope string, typeName string) string {
+		return scope + typeName
 	}
 
 	sym, err := scip.ParseSymbol(i.Symbol)
@@ -128,7 +140,9 @@ func addScipTypeFromSymbolInformation(mapId int, i *scip.SymbolInformation) {
 	}
 
 	for _, desc := range sym.Descriptors {
-		if desc.Suffix == scip.Descriptor_Type {
+		if desc.Suffix == scip.Descriptor_Namespace {
+			scopes += (desc.Name + "/")
+		} else if desc.Suffix == scip.Descriptor_Type {
 			typeName = typeName + "::" + desc.Name
 			if methodName != "" {
 				methodName = ""
@@ -142,17 +156,17 @@ func addScipTypeFromSymbolInformation(mapId int, i *scip.SymbolInformation) {
 	}
 
 	if typeName != "" && methodName != "" {
-		if t, ok := typeMaps[mapId][typeName]; ok {
+		if t, ok := typeMaps[mapId][getKeyName(scopes, typeName)]; ok {
 			t.Methods = append(t.Methods, getMethodName(methodName, disambiguator))
 			t.MethodSymbols = append(t.MethodSymbols, i)
 		} else {
-			typeMaps[mapId][typeName] = newScipType(typeName, nil, []string{getMethodName(methodName, disambiguator)}, []*scip.SymbolInformation{i})
+			typeMaps[mapId][getKeyName(scopes, typeName)] = newScipType(getKeyName(scopes, typeName), nil, []string{getMethodName(methodName, disambiguator)}, []*scip.SymbolInformation{i})
 		}
 	} else if typeName != "" && methodName == "" {
-		if t, ok := typeMaps[mapId][typeName]; ok {
+		if t, ok := typeMaps[mapId][getKeyName(scopes, typeName)]; ok {
 			t.TypeSymbol = i
 		} else {
-			typeMaps[mapId][typeName] = newScipType(typeName, i, []string{}, []*scip.SymbolInformation{})
+			typeMaps[mapId][getKeyName(scopes, typeName)] = newScipType(getKeyName(scopes, typeName), i, []string{}, []*scip.SymbolInformation{})
 		}
 	}
 }
@@ -387,11 +401,14 @@ func filterDocument(d *scip.Document) *scip.Document {
 	})
 
 	leftSymbols := d.Symbols
+	newLeftSymbols := []*scip.SymbolInformation{}
+	selectedSymbols := map[string]struct{}{}
 
 	for _, sym := range d.Symbols {
-		newLeftSymbols := []*scip.SymbolInformation{}
+
 		if _, ok := dependencies[sym.Symbol]; ok {
 			ret.Symbols = append(ret.Symbols, sym)
+			selectedSymbols[sym.Symbol] = struct{}{}
 		} else {
 			newLeftSymbols = append(newLeftSymbols, sym)
 		}
@@ -400,11 +417,12 @@ func filterDocument(d *scip.Document) *scip.Document {
 
 	for len(dependencies) > 0 {
 		new_dependencies := map[string]struct{}{}
-		newLeftSymbols := []*scip.SymbolInformation{}
+		newLeftSymbols = []*scip.SymbolInformation{}
 		for _, sym := range leftSymbols {
 			for _, rel := range sym.Relationships {
 				if _, ok := dependencies[rel.Symbol]; ok {
 					ret.Symbols = append(ret.Symbols, sym)
+					selectedSymbols[sym.Symbol] = struct{}{}
 					new_dependencies[sym.Symbol] = struct{}{}
 					break
 				}
@@ -416,7 +434,7 @@ func filterDocument(d *scip.Document) *scip.Document {
 	}
 
 	for _, o := range d.Occurrences {
-		if _, ok := whiteListedSymbols.Load(o.Symbol); ok {
+		if _, ok := selectedSymbols[o.Symbol]; ok {
 			ret.Occurrences = append(ret.Occurrences, o)
 		}
 	}
