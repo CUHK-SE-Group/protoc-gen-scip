@@ -2,14 +2,15 @@ package main
 
 import (
 	"fmt"
-	"github.com/hhatto/gocloc"
-	"github.com/urfave/cli/v2"
-	"google.golang.org/protobuf/proto"
 	"io"
 	"log"
 	"os"
 	"path"
 	"strings"
+
+	"github.com/hhatto/gocloc"
+	"github.com/urfave/cli/v2"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/sourcegraph/sourcegraph/lib/errors"
 
@@ -102,6 +103,7 @@ func clocMain(flags convertFlags) error {
 	}
 	languages := gocloc.NewDefinedLanguages()
 	options := gocloc.NewClocOptions()
+	options.SkipDuplicated = true
 	var paths []string
 	root = strings.TrimPrefix(root, "file://")
 
