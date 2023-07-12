@@ -20,7 +20,7 @@ var indexes []*scip.Index
 var typeMaps []map[string]*scipType
 var whiteListedSymbols sync.Map
 
-var grpcImpls sync.Map
+// var grpcImpls sync.Map
 
 // var globalSymbols symbolStringMap
 
@@ -40,13 +40,14 @@ func newScipType(name string, typeSymbol *scip.SymbolInformation, methods []stri
 	}
 }
 
-func (t *scipType) findMethod(s string) *scip.SymbolInformation {
+func (t *scipType) findMethods(s string) []*scip.SymbolInformation {
+	res := []*scip.SymbolInformation{}
 	for idx, m := range t.Methods {
 		if matchMethodName(m, s) {
-			return t.MethodSymbols[idx]
+			res = append(res, t.MethodSymbols[idx])
 		}
 	}
-	return nil
+	return res
 }
 
 func getServiceKey(s *protogen.Service) string {
@@ -62,7 +63,7 @@ func getKeyName(s string) string {
 }
 
 func matchMethodName(s string, frag string) bool {
-	return strings.Contains(strings.ReplaceAll(getKeyName(s), "_", ""), strings.ReplaceAll(getKeyName(frag), "_", ""))
+	return strings.HasPrefix(strings.ReplaceAll(getKeyName(s), "_", ""), strings.ReplaceAll(getKeyName(frag), "_", ""))
 }
 
 func matchName(s string, frag string) bool {
@@ -79,19 +80,20 @@ func matchProtoService(s *protogen.Service, t *scipType, symbols map[string]*sci
 		return relations, false
 	}
 
-	siMap := map[string]*scip.SymbolInformation{}
-	siMap[getServiceKey(s)] = t.TypeSymbol
+	siMap := map[*scip.SymbolInformation]string{}
+	siMap[t.TypeSymbol] = getServiceKey(s)
 	for _, m := range s.Methods {
-		if si := t.findMethod(m.GoName); si != nil {
-			siMap[getMethodKey(m)] = si
+		if matches := t.findMethods(m.GoName); matches != nil {
+			for _, si := range matches {
+				siMap[si] = getMethodKey(m)
+			}
 		} else {
 			return relations, false
 		}
 	}
 
-	for key, si := range siMap {
+	for si, key := range siMap {
 		whiteListedSymbols.Store(si.Symbol, struct{}{})
-		grpcImpls.Store(si.Symbol, symbols[key].Symbol)
 		si.Relationships = append(si.Relationships, &scip.Relationship{
 			Symbol:           symbols[key].Symbol,
 			IsReference:      true,
@@ -113,6 +115,12 @@ func matchProtoService(s *protogen.Service, t *scipType, symbols map[string]*sci
 func addScipTypeFromSymbolInformation(mapId int, i *scip.SymbolInformation) {
 	typeName := ""
 	methodName := ""
+	disambiguator := ""
+
+	getMethodName := func(method string, disambiguator string) string {
+		return method + disambiguator
+	}
+
 	sym, err := scip.ParseSymbol(i.Symbol)
 	if err != nil {
 		glog.Errorf("can not parse the symbol %v", i)
@@ -122,17 +130,23 @@ func addScipTypeFromSymbolInformation(mapId int, i *scip.SymbolInformation) {
 	for _, desc := range sym.Descriptors {
 		if desc.Suffix == scip.Descriptor_Type {
 			typeName = typeName + "::" + desc.Name
-		} else if desc.Suffix == scip.Descriptor_Method || desc.Suffix == scip.Descriptor_Term {
+			if methodName != "" {
+				methodName = ""
+			}
+		} else if desc.Suffix == scip.Descriptor_Method {
+			methodName = desc.Name
+			disambiguator = desc.Disambiguator
+		} else if desc.Suffix == scip.Descriptor_Term {
 			methodName = desc.Name
 		}
 	}
 
 	if typeName != "" && methodName != "" {
 		if t, ok := typeMaps[mapId][typeName]; ok {
-			t.Methods = append(t.Methods, methodName)
+			t.Methods = append(t.Methods, getMethodName(methodName, disambiguator))
 			t.MethodSymbols = append(t.MethodSymbols, i)
 		} else {
-			typeMaps[mapId][typeName] = newScipType(typeName, nil, []string{methodName}, []*scip.SymbolInformation{i})
+			typeMaps[mapId][typeName] = newScipType(typeName, nil, []string{getMethodName(methodName, disambiguator)}, []*scip.SymbolInformation{i})
 		}
 	} else if typeName != "" && methodName == "" {
 		if t, ok := typeMaps[mapId][typeName]; ok {
@@ -215,13 +229,12 @@ func generateProtoDocument(f *protogen.File, sourceroot string) *scip.Document {
 
 		for _, types := range typeMaps {
 			scipTypes := types
-			matched := false
 			go func() {
 				relations := make(map[string][]*scip.Relationship)
 				for _, t := range scipTypes {
-					relations, matched = matchProtoService(s, t, siMap, relations)
+					relations, _ = matchProtoService(s, t, siMap, relations)
 				}
-				if !matched {
+				if len(relations) > 0 {
 					relationMapChan <- relations
 				}
 				wg.Done()
@@ -365,51 +378,43 @@ func indexScipFile(id int, scipFilePath string, sourceroot string, wg *sync.Wait
 	indexes[id].Metadata.ProjectRoot = appendPrefix(sourceroot)
 }
 
-func findRelationSymbol(rels []*scip.Relationship, symbol string) bool {
-	for _, rel := range rels {
-		if rel.Symbol == symbol {
-			return true
-		}
-	}
-	return false
-}
-
-func appendProtoRef(s *scip.SymbolInformation) *scip.SymbolInformation {
-	newRelations := []*scip.Relationship{}
-	for _, rel := range s.Relationships {
-		if protoSym, ok := grpcImpls.Load(rel.Symbol); ok {
-			if !findRelationSymbol(s.Relationships, protoSym.(string)) {
-				newRelations = append(newRelations, &scip.Relationship{
-					Symbol:           protoSym.(string),
-					IsReference:      true,
-					IsImplementation: true,
-				})
-			}
-		}
-	}
-
-	s.Relationships = append(s.Relationships, newRelations...)
-
-	return s
-}
-
 func filterDocument(d *scip.Document) *scip.Document {
 	ret := &scip.Document{}
+	dependencies := map[string]struct{}{}
+	whiteListedSymbols.Range(func(key interface{}, value interface{}) bool {
+		dependencies[key.(string)] = value.(struct{})
+		return true
+	})
+
+	leftSymbols := d.Symbols
+
 	for _, sym := range d.Symbols {
-		if _, ok := whiteListedSymbols.Load(sym.Symbol); ok {
-			sym = appendProtoRef(sym)
+		newLeftSymbols := []*scip.SymbolInformation{}
+		if _, ok := dependencies[sym.Symbol]; ok {
 			ret.Symbols = append(ret.Symbols, sym)
 		} else {
+			newLeftSymbols = append(newLeftSymbols, sym)
+		}
+		leftSymbols = newLeftSymbols
+	}
+
+	for len(dependencies) > 0 {
+		new_dependencies := map[string]struct{}{}
+		newLeftSymbols := []*scip.SymbolInformation{}
+		for _, sym := range leftSymbols {
 			for _, rel := range sym.Relationships {
-				if _, ok := whiteListedSymbols.Load(rel.Symbol); ok {
-					whiteListedSymbols.Store(sym.Symbol, struct{}{})
-					sym = appendProtoRef(sym)
+				if _, ok := dependencies[rel.Symbol]; ok {
 					ret.Symbols = append(ret.Symbols, sym)
+					new_dependencies[sym.Symbol] = struct{}{}
 					break
 				}
 			}
+			newLeftSymbols = append(newLeftSymbols, sym)
 		}
+		leftSymbols = newLeftSymbols
+		dependencies = new_dependencies
 	}
+
 	for _, o := range d.Occurrences {
 		if _, ok := whiteListedSymbols.Load(o.Symbol); ok {
 			ret.Occurrences = append(ret.Occurrences, o)
@@ -424,7 +429,7 @@ func filterDocument(d *scip.Document) *scip.Document {
 
 func mergeIndexes(indexes []*scip.Index, newIndex *scip.Index) *scip.Index {
 	if len(indexes) == 0 {
-		glog.Infof("no index to be merged.")
+		glog.Errorf("no index to be merged.")
 		return newIndex
 	}
 
