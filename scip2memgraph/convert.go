@@ -78,8 +78,8 @@ func genRelationShip(rel *scip.Relationship, sym *scip.SymbolInformation, relati
 	return match
 }
 
-func genContains(sym string, d *scip.Document) []byte {
-	contains := []byte(fmt.Sprintf("MATCH (n0 {relpath:\"%s\"}), (n1 {fullname:\"%s\"}) MERGE(n0)-[:contains]->(n1);\n", d.RelativePath, sym))
+func genRefers(sym string, d *scip.Document) []byte {
+	contains := []byte(fmt.Sprintf("MATCH (n0 {relpath:\"%s\"}), (n1 {fullname:\"%s\"}) MERGE(n0)-[:refers]->(n1);\n", d.RelativePath, sym))
 	return contains
 }
 
@@ -112,7 +112,7 @@ func convertSCIPToMemgraph(index *scip.Index) []byte {
 			}
 		}
 		for _, o := range d.Occurrences {
-			content = append(content, genContains(o.Symbol, d)...)
+			content = append(content, genRefers(o.Symbol, d)...)
 		}
 	}
 	return content
