@@ -119,7 +119,7 @@ func matchProtoService(s *protogen.Service, t *scipType, symbols map[string]*sci
 	return relations, true
 }
 
-func addScipTypeFromSymbolInformation(mapId int, i *scip.SymbolInformation) {
+func addScipTypeFromSymbolInformation(mapId int, i *scip.SymbolInformation, desPrefix string) {
 	typeName := ""
 	methodName := ""
 	disambiguator := ""
@@ -134,6 +134,8 @@ func addScipTypeFromSymbolInformation(mapId int, i *scip.SymbolInformation) {
 	}
 
 	sym, err := scip.ParseSymbol(i.Symbol)
+	sym.Descriptors = append([]*scip.Descriptor{{Name: desPrefix, Suffix: scip.Descriptor_Namespace}}, sym.Descriptors...)
+	i.Symbol = scip.VerboseSymbolFormatter.FormatSymbol(sym)
 	if err != nil {
 		glog.Errorf("can not parse the symbol %v", i)
 		return
@@ -343,11 +345,26 @@ func indexScipFile(id int, scipFilePath string, sourceroot string, wg *sync.Wait
 			glog.Errorf("can not get the new relative path for %s: %v", scipFilePath, err)
 			newRelPath = d.RelativePath
 		}
+		diff, err := filepath.Rel(sourceroot, removePrefix(indexes[id].Metadata.GetProjectRoot()))
+		if err != nil {
+			glog.Fatalf("can not get the diff path for %s: %v", newRelPath, err)
+			// newRelPath = d.RelativePath
+		}
+		diff = filepath.Clean(diff)
 		d.RelativePath = newRelPath
 		indexes[id].Documents = append(indexes[id].Documents, d)
 		if filter(d) {
 			for _, i := range d.Symbols {
-				addScipTypeFromSymbolInformation(id, i)
+				addScipTypeFromSymbolInformation(id, i, diff)
+			}
+			for _, o := range d.Occurrences {
+				sym, err := scip.ParseSymbol(o.Symbol)
+				if err != nil {
+					glog.Errorf("can not to parse symbol name in occurence: %v", o)
+					continue
+				}
+				sym.Descriptors = append([]*scip.Descriptor{{Name: diff, Suffix: scip.Descriptor_Namespace}}, sym.Descriptors...)
+				o.Symbol = scip.VerboseSymbolFormatter.FormatSymbol(sym)
 			}
 		}
 	}
