@@ -86,6 +86,9 @@ func matchProtoService(s *protogen.Service, t *scipType, symbols map[string]*sci
 	if !matchName(t.getTypeName(), s.GoName) {
 		return relations, false
 	}
+	if strings.HasSuffix(t.TypeSymbol.Symbol, "Go_B/cmd/server#") {
+		glog.Errorf("i  a m here and is %s\n", t.TypeSymbol.Symbol)
+	}
 
 	siMap := map[*scip.SymbolInformation]string{}
 	siMap[t.TypeSymbol] = getServiceKey(s)
@@ -119,6 +122,16 @@ func matchProtoService(s *protogen.Service, t *scipType, symbols map[string]*sci
 	return relations, true
 }
 
+func addNamespacePrefixToSymbol(s string, prefix string) string {
+	sym, err := scip.ParseSymbol(s)
+	if err != nil {
+		glog.Errorf("can not parse symbol when altering the symbol uri for %v", s)
+		return s
+	}
+	sym.Descriptors = append([]*scip.Descriptor{{Name: prefix, Suffix: scip.Descriptor_Namespace}}, sym.Descriptors...)
+	return scip.VerboseSymbolFormatter.FormatSymbol(sym)
+}
+
 func addScipTypeFromSymbolInformation(mapId int, i *scip.SymbolInformation, desPrefix string) {
 	typeName := ""
 	methodName := ""
@@ -134,11 +147,13 @@ func addScipTypeFromSymbolInformation(mapId int, i *scip.SymbolInformation, desP
 	}
 
 	sym, err := scip.ParseSymbol(i.Symbol)
-	sym.Descriptors = append([]*scip.Descriptor{{Name: desPrefix, Suffix: scip.Descriptor_Namespace}}, sym.Descriptors...)
-	i.Symbol = scip.VerboseSymbolFormatter.FormatSymbol(sym)
 	if err != nil {
 		glog.Errorf("can not parse the symbol %v", i)
 		return
+	}
+	i.Symbol = addNamespacePrefixToSymbol(i.Symbol, desPrefix)
+	for _, rel := range i.Relationships {
+		rel.Symbol = addNamespacePrefixToSymbol(rel.Symbol, desPrefix)
 	}
 
 	for _, desc := range sym.Descriptors {
