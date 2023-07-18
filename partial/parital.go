@@ -366,6 +366,9 @@ func indexScipFile(id int, scipFilePath string, sourceroot string, wg *sync.Wait
 			// newRelPath = d.RelativePath
 		}
 		diff = filepath.Clean(diff)
+		if diff == "." {
+			diff = ""
+		}
 		d.RelativePath = newRelPath
 		indexes[id].Documents = append(indexes[id].Documents, d)
 		if filter(d) {
@@ -375,7 +378,7 @@ func indexScipFile(id int, scipFilePath string, sourceroot string, wg *sync.Wait
 			for _, o := range d.Occurrences {
 				sym, err := scip.ParseSymbol(o.Symbol)
 				if err != nil {
-					glog.Errorf("can not to parse symbol name in occurence: %v", o)
+					glog.Errorf("can not parse symbol name in occurrence: %v", o)
 					continue
 				}
 				sym.Descriptors = append([]*scip.Descriptor{{Name: diff, Suffix: scip.Descriptor_Namespace}}, sym.Descriptors...)
