@@ -123,6 +123,9 @@ func matchProtoService(s *protogen.Service, t *scipType, symbols map[string]*sci
 }
 
 func addNamespacePrefixToSymbol(s string, prefix string) string {
+	if prefix == "" {
+		return s
+	}
 	sym, err := scip.ParseSymbol(s)
 	if err != nil {
 		glog.Errorf("can not parse symbol when altering the symbol uri for %v", s)
@@ -376,13 +379,14 @@ func indexScipFile(id int, scipFilePath string, sourceroot string, wg *sync.Wait
 				addScipTypeFromSymbolInformation(id, i, diff)
 			}
 			for _, o := range d.Occurrences {
-				sym, err := scip.ParseSymbol(o.Symbol)
-				if err != nil {
-					glog.Errorf("can not parse symbol name in occurrence: %v", o)
-					continue
-				}
-				sym.Descriptors = append([]*scip.Descriptor{{Name: diff, Suffix: scip.Descriptor_Namespace}}, sym.Descriptors...)
-				o.Symbol = scip.VerboseSymbolFormatter.FormatSymbol(sym)
+				o.Symbol = addNamespacePrefixToSymbol(o.Symbol, diff)
+				// sym, err := scip.ParseSymbol(o.Symbol)
+				// if err != nil {
+				// 	glog.Errorf("can not parse symbol name in occurrence: %v", o)
+				// 	continue
+				// }
+				// sym.Descriptors = append([]*scip.Descriptor{{Name: diff, Suffix: scip.Descriptor_Namespace}}, sym.Descriptors...)
+				// o.Symbol = scip.VerboseSymbolFormatter.FormatSymbol(sym)
 			}
 		}
 	}
