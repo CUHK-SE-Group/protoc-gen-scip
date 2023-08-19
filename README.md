@@ -14,7 +14,7 @@ The workflow is shown below.
 
 ![workflow](docs/workflow.jpg)
 
-We have a [benchmark](https://github.com/rpcover/RPCover) to test the functionality and performance of our plugin.
+We have a [benchmark](https://github.com/CUHK-SE-Group/RPCoverBenchmark) to test the functionality and performance of our plugin.
 # Quick Start
 
 ## protoc-gen-scip
